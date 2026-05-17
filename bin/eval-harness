@@ -1,0 +1,307 @@
+#!/usr/bin/env bash
+# eval-harness — evaluate migrated repositories using Claude CLI
+set -euo pipefail
+
+# ── Colors ───────────────────────────────────────────────────────
+if [[ -t 2 ]]; then
+  C_R='\033[0;31m'; C_G='\033[0;32m'; C_Y='\033[1;33m'
+  C_B='\033[0;34m'; C_C='\033[0;36m'; C_BOLD='\033[1m'; C_X='\033[0m'
+else
+  C_R=''; C_G=''; C_Y=''; C_B=''; C_C=''; C_BOLD=''; C_X=''
+fi
+
+info()    { printf "${C_C}ℹ${C_X} %s\n" "$*" >&2; }
+ok()      { printf "${C_G}✓${C_X} %s\n" "$*" >&2; }
+warn()    { printf "${C_Y}⚠${C_X} %s\n" "$*" >&2; }
+err()     { printf "${C_R}✗${C_X} %s\n" "$*" >&2; }
+fatal()   { err "$*"; exit 1; }
+header()  { printf "\n${C_BOLD}${C_B}── %s ──${C_X}\n" "$*" >&2; }
+
+# ── Paths ────────────────────────────────────────────────────────
+EVAL_HOME="$(cd "$(dirname "$(dirname "${BASH_SOURCE[0]}")")" && pwd -P)"
+EVAL_RUNS="$EVAL_HOME/eval-runs"
+
+# ── Usage ────────────────────────────────────────────────────────
+usage() {
+  cat >&2 <<EOF
+eval-harness — evaluate migration quality using Claude CLI
+
+Usage:
+  eval-harness <migrated-repo>              Evaluate single migration
+  eval-harness --compare <repo1> <repo2>... Compare multiple migrations
+
+Examples:
+  eval-harness ~/apps/coolstore-sonnet-4-5
+  eval-harness --compare ~/eval/coolstore-*
+
+Expects artifacts in each repo:
+  - metrics.json
+  - PLAN.md
+  - execution-log.md
+  - verification-report.md
+
+Output:
+  <repo>/eval-report.md (single eval)
+  eval-runs/eval-comparison-*.md (comparison)
+EOF
+  exit "${1:-1}"
+}
+
+# ── Validation ───────────────────────────────────────────────────
+check_deps() {
+  command -v jq >/dev/null 2>&1 || fatal "jq not found. Install with: brew install jq"
+  command -v claude >/dev/null 2>&1 || fatal "claude CLI not found. Install Claude CLI."
+}
+
+validate_repo() {
+  local repo="$1"
+  [[ -d "$repo" ]] || fatal "Repository not found: $repo"
+  [[ -f "$repo/metrics.json" ]] || fatal "Missing metrics.json in $repo"
+  [[ -f "$repo/PLAN.md" ]] || fatal "Missing PLAN.md in $repo"
+  [[ -f "$repo/execution-log.md" ]] || warn "Missing execution-log.md in $repo"
+  [[ -f "$repo/verification-report.md" ]] || warn "Missing verification-report.md in $repo"
+}
+
+# ── Single Evaluation ────────────────────────────────────────────
+eval_single() {
+  local repo="$(cd "$1" && pwd)"
+  validate_repo "$repo"
+
+  local model provider duration overall_status
+  model=$(jq -r '.model // "unknown"' "$repo/metrics.json")
+  provider=$(jq -r '.provider // "unknown"' "$repo/metrics.json")
+  duration=$(jq -r '.total_duration_seconds // 0' "$repo/metrics.json")
+  overall_status=$(jq -r '.overall_status // "unknown"' "$repo/metrics.json")
+
+  header "Evaluating Migration"
+  info "Repository: $repo"
+  info "Migrated with: $model ($provider)"
+  info "Duration: ${duration}s ($((duration / 60))m)"
+  info "Status: $overall_status"
+  info "Evaluating with: Claude Opus 4.6"
+  echo
+
+  # Create evaluation prompt
+  local prompt_file=$(mktemp)
+  cat > "$prompt_file" <<'EOF'
+You are an expert migration evaluator. Assess this migration on standardized criteria.
+
+## Evaluation Criteria
+
+### 1. PLAN QUALITY (0-10)
+- **Completeness (0-3):** All necessary changes identified?
+- **Detail (0-3):** Steps specific and actionable?
+- **Ordering (0-2):** Dependencies respected?
+- **Reference usage (0-2):** Appropriate migration reference used?
+
+### 2. EXECUTION QUALITY (0-10)
+- **Lessons documented (0-3):** Clear lessons per step?
+- **Errors logged (0-3):** Errors documented with context?
+- **Scope discipline (0-2):** Focused, no over-engineering?
+- **Files touched (0-2):** Only necessary files modified?
+
+### 3. VERIFICATION SUCCESS (0-10)
+- **Build status (0-5):** Build succeeds?
+- **Test results (0-3):** Test pass rate?
+- **Auto-fix effectiveness (0-2):** Auto-fix resolved errors?
+
+### 4. OVERALL (0-10)
+Weighted: (plan × 0.3) + (execution × 0.2) + (verification × 0.5)
+
+**Production readiness:**
+- 9-10: Production ready
+- 7-8: Near production ready
+- 5-6: Significant work remaining
+- 0-4: Not production ready
+
+## Task
+
+Read these files and generate a comprehensive eval-report.md:
+
+1. Read metrics.json
+2. Read PLAN.md
+3. Read execution-log.md
+4. Read verification-report.md
+
+Then write eval-report.md with:
+- Scores table (all 4 dimensions with sub-scores breakdown)
+- Detailed analysis
+- Strengths (specific examples from files)
+- Weaknesses (specific examples)
+- Production readiness assessment
+- Skill gap analysis (which skill files need updates, with evidence)
+- Time efficiency analysis
+- Model-specific observations
+
+Be thorough and provide deep insights. Use specific evidence from the files.
+EOF
+
+  info "Calling Claude CLI (Opus 4.6) for evaluation..."
+
+  # Call Claude CLI in the repo directory so it can read files
+  cd "$repo"
+
+  if claude --model claude-opus-4-6 < "$prompt_file" > /tmp/claude-eval-output.txt 2>&1; then
+    # Extract the report from Claude's response
+    # Claude might add conversational text, so we need to extract just the markdown report
+
+    # Check if eval-report.md was created
+    if [[ -f "$repo/eval-report.md" ]]; then
+      ok "Evaluation complete"
+      ok "Report: $repo/eval-report.md"
+      echo
+      info "Summary (first 40 lines):"
+      head -40 "$repo/eval-report.md"
+    else
+      # Claude might have output the report to stdout
+      cat /tmp/claude-eval-output.txt > "$repo/eval-report.md"
+      ok "Evaluation complete"
+      ok "Report: $repo/eval-report.md"
+      echo
+      info "Summary (first 40 lines):"
+      head -40 "$repo/eval-report.md"
+    fi
+  else
+    err "Claude CLI evaluation failed"
+    cat /tmp/claude-eval-output.txt >&2
+    return 1
+  fi
+
+  rm -f "$prompt_file"
+}
+
+# ── Comparative Evaluation ───────────────────────────────────────
+eval_compare() {
+  local repos=("$@")
+  [[ ${#repos[@]} -gt 0 ]] || fatal "No repositories provided"
+
+  header "Comparing ${#repos[@]} Migrations"
+
+  # Validate all repos
+  for repo in "${repos[@]}"; do
+    validate_repo "$repo"
+    local model duration
+    model=$(jq -r '.model' "$repo/metrics.json")
+    duration=$(jq -r '.total_duration_seconds' "$repo/metrics.json")
+    info "  $(basename "$repo"): $model (${duration}s)"
+  done
+  echo
+
+  # Eval each individually first (if not already done)
+  info "Ensuring each migration has eval-report.md..."
+  for repo in "${repos[@]}"; do
+    if [[ ! -f "$repo/eval-report.md" ]]; then
+      info "Evaluating $(basename "$repo")..."
+      eval_single "$repo" || warn "Evaluation failed for $repo"
+      echo
+    else
+      ok "$(basename "$repo") already evaluated"
+    fi
+  done
+
+  # Generate comparison
+  local comparison_file="$EVAL_RUNS/eval-comparison-$(date +%Y%m%d-%H%M%S).md"
+  mkdir -p "$EVAL_RUNS"
+
+  header "Generating Comparative Analysis"
+
+  # Create comparison prompt
+  local prompt_file=$(mktemp)
+  cat > "$prompt_file" <<EOF
+You are comparing ${#repos[@]} migrations of the same application using different models.
+
+## Repositories to Compare
+
+$(for repo in "${repos[@]}"; do echo "- $repo"; done)
+
+## Task
+
+Read the following from each repository:
+1. metrics.json
+2. eval-report.md
+
+Then generate a comprehensive comparative analysis markdown report with:
+
+### 1. Executive Summary
+- Best overall model (by score)
+- Fastest model (by time)
+- Best plan quality
+- Best verification success
+
+### 2. Model Rankings
+- By overall score (table)
+- By time efficiency (score/second)
+
+### 3. Dimension Analysis
+- Plan quality comparison
+- Execution quality comparison
+- Verification success comparison
+- What patterns emerged?
+
+### 4. Time vs Quality Trade-offs
+- Fast but lower quality models
+- Slower but higher quality models
+- Balanced models
+- Recommendation for this migration type
+
+### 5. Skill Improvement Recommendations
+Based on common failures across ALL models:
+- Which skill files need updates?
+- What patterns did ALL models struggle with?
+- What should migration skills teach better?
+- Provide specific evidence from eval reports
+
+Write the comparison to: $comparison_file
+
+Be thorough. Provide deep insights into which model is best for different use cases.
+EOF
+
+  info "Calling Claude CLI (Opus 4.6) for comparison..."
+
+  # Change to EVAL_RUNS directory so Claude can write the file there
+  cd "$EVAL_RUNS"
+
+  if claude --model claude-opus-4-6 < "$prompt_file" > /tmp/claude-compare-output.txt 2>&1; then
+    if [[ -f "$comparison_file" ]]; then
+      ok "Comparison complete"
+      ok "Report: $comparison_file"
+      echo
+      info "Preview (first 60 lines):"
+      head -60 "$comparison_file"
+    else
+      # Claude output might be in stdout
+      cat /tmp/claude-compare-output.txt > "$comparison_file"
+      ok "Comparison complete"
+      ok "Report: $comparison_file"
+      echo
+      info "Preview (first 60 lines):"
+      head -60 "$comparison_file"
+    fi
+  else
+    err "Comparison failed"
+    cat /tmp/claude-compare-output.txt >&2
+    return 1
+  fi
+
+  rm -f "$prompt_file"
+}
+
+# ── Main Dispatch ────────────────────────────────────────────────
+check_deps
+
+case "${1:-}" in
+  --compare)
+    shift
+    [[ $# -gt 0 ]] || usage 1
+    eval_compare "$@"
+    ;;
+  -h|--help|help)
+    usage 0
+    ;;
+  "")
+    usage 1
+    ;;
+  *)
+    eval_single "$1"
+    ;;
+esac
