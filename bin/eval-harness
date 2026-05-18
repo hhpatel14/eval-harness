@@ -116,14 +116,14 @@ Weighted: (plan × 0.3) + (execution × 0.2) + (verification × 0.5)
 
 ## Task
 
-Read these files and generate a comprehensive eval-report.md:
+Read these files and generate a comprehensive evaluation report:
 
 1. Read metrics.json
 2. Read PLAN.md
 3. Read execution-log.md
 4. Read verification-report.md
 
-Then write eval-report.md with:
+Then OUTPUT (do not try to write to file, just print) a comprehensive markdown report with:
 - Scores table (all 4 dimensions with sub-scores breakdown)
 - Detailed analysis
 - Strengths (specific examples from files)
@@ -139,28 +139,15 @@ EOF
   info "Calling Claude CLI (Opus 4.6) for evaluation..."
 
   # Call Claude CLI in the repo directory so it can read files
+  # Capture output directly since Claude can't write due to sandbox restrictions
   cd "$repo"
 
-  if claude --model claude-opus-4-6 < "$prompt_file" > /tmp/claude-eval-output.txt 2>&1; then
-    # Extract the report from Claude's response
-    # Claude might add conversational text, so we need to extract just the markdown report
-
-    # Check if eval-report.md was created
-    if [[ -f "$repo/eval-report.md" ]]; then
-      ok "Evaluation complete"
-      ok "Report: $repo/eval-report.md"
-      echo
-      info "Summary (first 40 lines):"
-      head -40 "$repo/eval-report.md"
-    else
-      # Claude might have output the report to stdout
-      cat /tmp/claude-eval-output.txt > "$repo/eval-report.md"
-      ok "Evaluation complete"
-      ok "Report: $repo/eval-report.md"
-      echo
-      info "Summary (first 40 lines):"
-      head -40 "$repo/eval-report.md"
-    fi
+  if claude --model claude-opus-4-6 < "$prompt_file" > "$repo/eval-report.md" 2>&1; then
+    ok "Evaluation complete"
+    ok "Report: $repo/eval-report.md"
+    echo
+    info "Summary (first 40 lines):"
+    head -40 "$repo/eval-report.md"
   else
     err "Claude CLI evaluation failed"
     cat /tmp/claude-eval-output.txt >&2
@@ -258,32 +245,86 @@ EOF
 
   info "Calling Claude CLI (Opus 4.6) for comparison..."
 
-  # Change to EVAL_RUNS directory so Claude can write the file there
+  # Copy eval-reports to eval-runs so Claude can read them (sandbox restrictions)
+  local temp_dir="$EVAL_RUNS/temp-compare-$$"
+  mkdir -p "$temp_dir"
+
+  local idx=1
+  for repo in "${repos[@]}"; do
+    cp "$repo/metrics.json" "$temp_dir/repo${idx}-metrics.json"
+    cp "$repo/eval-report.md" "$temp_dir/repo${idx}-eval-report.md"
+    idx=$((idx + 1))
+  done
+
+  # Update prompt to reference temp files
+  local compare_prompt_file=$(mktemp)
+  cat > "$compare_prompt_file" <<EOF
+You are comparing ${#repos[@]} migrations of the same application using different models.
+
+## Repositories Compared
+
+$(idx=1; for repo in "${repos[@]}"; do
+  echo "### Repository $idx: $(basename "$repo")"
+  echo "- metrics.json: temp-compare-$$/repo${idx}-metrics.json"
+  echo "- eval-report.md: temp-compare-$$/repo${idx}-eval-report.md"
+  idx=$((idx + 1))
+done)
+
+## Task
+
+Read the metrics.json and eval-report.md from the temp-compare-$$ directory for each repository.
+
+Then generate a comprehensive comparative analysis markdown report with:
+
+### 1. Executive Summary
+- Best overall model (by score)
+- Fastest model (by time)
+- Best plan quality
+- Best verification success
+
+### 2. Model Rankings
+- By overall score (table)
+- By time efficiency (score/second)
+
+### 3. Dimension Analysis
+- Plan quality comparison
+- Execution quality comparison
+- Verification success comparison
+- What patterns emerged?
+
+### 4. Time vs Quality Trade-offs
+- Fast but lower quality models
+- Slower but higher quality models
+- Balanced models
+- Recommendation for this migration type
+
+### 5. Skill Improvement Recommendations
+Based on common failures across ALL models:
+- Which skill files need updates?
+- What patterns did ALL models struggle with?
+- What should migration skills teach better?
+- Provide specific evidence from eval reports
+
+OUTPUT (do not try to write to file, just print) the comprehensive comparison report in markdown format. Be thorough with deep insights.
+EOF
+
+  # Run Claude from eval-runs directory and capture output directly
   cd "$EVAL_RUNS"
 
-  if claude --model claude-opus-4-6 < "$prompt_file" > /tmp/claude-compare-output.txt 2>&1; then
-    if [[ -f "$comparison_file" ]]; then
-      ok "Comparison complete"
-      ok "Report: $comparison_file"
-      echo
-      info "Preview (first 60 lines):"
-      head -60 "$comparison_file"
-    else
-      # Claude output might be in stdout
-      cat /tmp/claude-compare-output.txt > "$comparison_file"
-      ok "Comparison complete"
-      ok "Report: $comparison_file"
-      echo
-      info "Preview (first 60 lines):"
-      head -60 "$comparison_file"
-    fi
+  if claude --model claude-opus-4-6 < "$compare_prompt_file" > "$comparison_file" 2>&1; then
+    ok "Comparison complete"
+    ok "Report: $comparison_file"
+    echo
+    info "Preview (first 60 lines):"
+    head -60 "$comparison_file"
   else
     err "Comparison failed"
     cat /tmp/claude-compare-output.txt >&2
     return 1
   fi
 
-  rm -f "$prompt_file"
+  rm -f "$compare_prompt_file"
+  rm -rf "$temp_dir"
 }
 
 # ── Main Dispatch ────────────────────────────────────────────────

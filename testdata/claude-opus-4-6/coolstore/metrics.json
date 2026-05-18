@@ -1,0 +1,47 @@
+{
+  "model": "claude-opus-4-6",
+  "provider": "gcp_vertex_ai",
+  "migration_request": "Migrate javaEE to quarkus",
+  "repo_path": "/Users/hitpatel/coolstore",
+  "started_at": "2026-05-17T15:51:34-04:00",
+  "completed_at": "2026-05-17T16:09:44-04:00",
+  "total_duration_seconds": 1090,
+  "overall_status": "success",
+  "steps": {
+    "detect": {
+      "duration_seconds": 6,
+      "status": "success",
+      "nodes": 4275,
+      "edges": 8386,
+      "communities": 614
+    },
+    "plan": {
+      "duration_seconds": 273,
+      "status": "success",
+      "reference_used": "javaee-quarkus.md",
+      "steps_generated": 35,
+      "complex_steps": 4
+    },
+    "execute": {
+      "duration_seconds": 755,
+      "status": "success",
+      "total_items": 35,
+      "items_succeeded": 32,
+      "items_failed": 3
+    },
+    "verify": {
+      "duration_seconds": 56,
+      "status": "success",
+      "build_ok": true,
+      "tests_total": 0,
+      "tests_passed": 0,
+      "tests_failed": 0,
+      "fix_attempts": 2
+    },
+    "fix_loop": {
+      "duration_seconds": 0,
+      "status": "success",
+      "iterations": 0
+    }
+  }
+}

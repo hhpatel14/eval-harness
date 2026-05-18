@@ -1,0 +1,30 @@
+{
+  "repo": "/Users/hitpatel/coolstore",
+  "manifests": {
+    "pom_xml": true,
+    "package_json": false,
+    "pyproject_toml": false,
+    "requirements_txt": false,
+    "setup_py": false,
+    "go_mod": false,
+    "cargo_toml": false,
+    "gemfile": false
+  },
+  "files": {
+    "java": 217,
+    "python": 1,
+    "javascript": 4030,
+    "typescript": 14,
+    "go": 0,
+    "rust": 0,
+    "csharp": 0,
+    "ruby": 6
+  },
+  "graph": {
+    "nodes": 4275,
+    "edges": 8386,
+    "communities": 614,
+    "god_nodes": 0
+  },
+  "graph_file": "graph.json"
+}
